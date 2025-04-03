@@ -22,14 +22,14 @@ export function usePackets() {
       console.log('Disconnected from packet stream');
     });
 
-    socket.on('packet', (packet: Packet) => {
-      setPackets(prev => [packet, ...prev].slice(0, 100));
+    socket.on('packet_batch', (newPackets: Packet[]) => {
+      setPackets(prev => [...newPackets, ...prev].slice(0, 100));
     });
 
     return () => {
       socket.off('connect');
       socket.off('disconnect');
-      socket.off('packet');
+      socket.off('packet_batch');
     };
   }, []);
 

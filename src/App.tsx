@@ -21,33 +21,43 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center">
-            <Shield className="h-8 w-8 text-blue-600 mr-3" />
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">
-                Network Intrusion Detection System
-              </h1>
-              <p className="text-sm text-gray-500 mt-1">by Silent Guardians</p>
+      {/* Header Section */}
+      <div className="w-full bg-white shadow-sm mb-6">
+        <div className="max-w-[98%] mx-auto px-4 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <Shield className="h-8 w-8 text-blue-600 mr-3" />
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">
+                  Network Intrusion Detection System
+                </h1>
+                <p className="text-sm text-gray-500 mt-1">by Silent Guardians</p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              {isConnected ? (
+                <Wifi className="h-5 w-5 text-green-500" />
+              ) : (
+                <WifiOff className="h-5 w-5 text-red-500" />
+              )}
+              <span className={`text-sm ${isConnected ? 'text-green-500' : 'text-red-500'}`}>
+                {isConnected ? 'Connected' : 'Disconnected'}
+              </span>
             </div>
           </div>
-          <div className="flex items-center space-x-2">
-            {isConnected ? (
-              <Wifi className="h-5 w-5 text-green-500" />
-            ) : (
-              <WifiOff className="h-5 w-5 text-red-500" />
-            )}
-            <span className={`text-sm ${isConnected ? 'text-green-500' : 'text-red-500'}`}>
-              {isConnected ? 'Connected' : 'Disconnected'}
-            </span>
-          </div>
         </div>
+      </div>
 
+      {/* Main Content */}
+      <div className="max-w-[98%] mx-auto px-4">
         <div className="space-y-6">
-          <AdminPanel />
+          {/* Admin Panel Card */}
+          <div className="bg-white rounded-lg shadow-sm p-6 transition-all hover:shadow-md">
+            <AdminPanel />
+          </div>
 
-          <div className="bg-white rounded-lg shadow-sm p-6">
+          {/* Main Data Card */}
+          <div className="bg-white rounded-lg shadow-sm p-6 transition-all hover:shadow-md">
             <div className="flex flex-wrap gap-4 mb-6">
               <div className="flex-1 min-w-[300px]">
                 <SearchBar
@@ -56,7 +66,7 @@ export default function App() {
                   onClear={() => setSearchTerm('')}
                 />
               </div>
-              <div className="flex gap-4">
+              <div className="flex gap-4 flex-wrap">
                 <ProtocolFilter
                   value={selectedProtocol}
                   onChange={setSelectedProtocol}
