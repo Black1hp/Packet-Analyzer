@@ -1,0 +1,7 @@
+flask
+flask-socketio
+flask-cors
+python-dotenv
+scapy
+python-socketio
+eventlet
