@@ -1,21 +1,18 @@
-from scapy.all import sniff, Ether, IP, TCP, UDP, ICMP, DNS, Raw
-import keyboard
-import logging
-import threading
-from datetime import datetime, timedelta
-import json
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
 from flask_cors import CORS
+import logging
+import threading
+from datetime import datetime
+import json
 import uuid
 import os
-import smtplib
 from dotenv import load_dotenv
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import socket
 import sys
-from queue import Queue
+from queue import Queue, Empty
 
 load_dotenv()
 
@@ -39,7 +36,7 @@ blocked_ports = []
 
 class AlertTracker:
     def __init__(self):
-        self.alerts = {}  # Format: {'alert_type_key': {'last_sent': timestamp, 'details': str}}
+        self.alerts = {}
         
     def should_send_alert(self, alert_type_key):
         if alert_type_key not in self.alerts:
@@ -53,6 +50,8 @@ class AlertTracker:
             'last_sent': datetime.now(),
             'details': details
         }
+
+alert_tracker = AlertTracker()
 
 def send_email_alert(subject, body_data):
     try:
@@ -175,8 +174,6 @@ def handle_suspicious_activity(activity_type, details, source_ip=None, dest_ip=N
         send_email_alert(subject, body_data)
         alert_tracker.update_alert_timestamp(alert_key, details)
 
-alert_tracker = AlertTracker()
-
 def check_port_suspicious(source_port, dest_port):
     is_suspicious = any(
         (blocked_port['port'] == source_port and blocked_port['type'] == 'source') or
@@ -193,304 +190,152 @@ def check_port_suspicious(source_port, dest_port):
     
     return is_suspicious
 
-def detect_application_protocol(packet, sport, dport):
+def detect_application_protocol(suricata_data):
+    l7_proto = suricata_data.get('L7_PROTO', '').upper()
+    if l7_proto:
+        return l7_proto
+    
+    protocol = suricata_data.get('PROTOCOL', '').upper()
+    src_port = suricata_data.get('L4_SRC_PORT')
+    dst_port = suricata_data.get('L4_DST_PORT')
+    
     common_ports = {
-        22: 'SSH', 
-        21: 'FTP', 
-        25: 'SMTP', 
-        80: 'HTTP', 
+        80: 'HTTP',
         443: 'HTTPS',
-        53: 'DNS', 
-        110: 'POP3', 
-        143: 'IMAP', 
-        3306: 'MySQL', 
-        5432: 'PostgreSQL',
-        3389: 'RDP',
-        1433: 'MSSQL',
-        27017: 'MongoDB',
-        6379: 'Redis',
-        8080: 'HTTP-ALT',
-        8443: 'HTTPS-ALT',
-        8888: 'HTTP-ALT',
-        9000: 'Jenkins',
-        9200: 'Elasticsearch',
-        9300: 'Elasticsearch-Cluster'
+        22: 'SSH',
+        53: 'DNS',
+        3306: 'MySQL',
+        5432: 'PostgreSQL'
     }
     
-    # VoIP and messaging ports
-    voip_ports = {
-        5060: 'SIP',
-        5061: 'SIPS',
-        3478: 'STUN',
-        3479: 'STUN',
-        3480: 'STUN',
-        3481: 'STUN',
-        16384: 'RTP',
-        16385: 'RTP',
-        16386: 'RTP',
-        16387: 'RTP'
-    }
+    if src_port in common_ports:
+        return common_ports[src_port]
+    if dst_port in common_ports:
+        return common_ports[dst_port]
     
-    # Gaming ports
-    gaming_ports = {
-        25565: 'Minecraft',
-        27015: 'Steam',
-        27016: 'Steam',
-        27017: 'Steam',
-        27018: 'Steam',
-        27019: 'Steam',
-        27020: 'Steam'
-    }
-    
-    # Check for common application ports
-    if sport in common_ports:
-        return common_ports[sport]
-    if dport in common_ports:
-        return common_ports[dport]
-        
-    # Check for VoIP ports
-    if sport in voip_ports or dport in voip_ports:
-        return 'VoIP'
-        
-    # Check for gaming ports
-    if sport in gaming_ports or dport in gaming_ports:
-        return 'Gaming'
-        
-    # Analyze payload for HTTP/HTTPS
-    if Raw in packet:
-        payload = str(packet[Raw].load)
-        if any(method in payload for method in ['GET ', 'POST ', 'HTTP/']):
-            return 'HTTP'
-        if any(method in payload for method in ['WebSocket', 'ws://', 'wss://']):
-            return 'WebSocket'
-        if any(method in payload for method in ['RTSP', 'RTP']):
-            return 'Streaming'
-    
-    if TCP in packet:
-        return 'TCP'
-    elif UDP in packet:
-        return 'UDP'
-    elif ICMP in packet:
-        return 'ICMP'
-    
-    return 'UNKNOWN'
+    return protocol
 
-def detect_packet_activity(packet, packet_data):
-    sport = packet_data['sourcePort']
-    dport = packet_data['destinationPort']
-    payload = packet_data['payload']
-    size = packet_data['size']
-    protocol = packet_data['protocol']
-
-    # VoIP Detection
-    if protocol == 'UDP' and 100 < size < 300:
-        if sport in [16384, 16385, 16386, 16387] or dport in [16384, 16385, 16386, 16387]:
-            return 'VoIP Call'
-        if sport in [5060, 5061] or dport in [5060, 5061]:
-            return 'VoIP Signaling'
-    
-    # Messaging Detection
-    if protocol == 'TCP' and (sport == 443 or dport == 443) and size < 500:
-        if payload and any(keyword in payload for keyword in ['POST', 'GET', 'chat', 'message', 'status']):
-            return 'Messaging'
-    
-    # File Transfer Detection
-    if protocol == 'TCP' and (sport == 80 or dport == 80 or sport == 443 or dport == 443):
-        if size > 1000 or (payload and any(keyword in payload for keyword in ['Content-Disposition', 'download', 'upload'])):
-            return 'File Transfer'
+def detect_activity_type(suricata_data):
+    protocol = suricata_data.get('PROTOCOL', '').upper()
+    l7_proto = suricata_data.get('L7_PROTO', '').upper()
+    src_port = suricata_data.get('L4_SRC_PORT')
+    dst_port = suricata_data.get('L4_DST_PORT')
+    in_bytes = suricata_data.get('IN_BYTES', 0)
+    out_bytes = suricata_data.get('OUT_BYTES', 0)
+    duration = suricata_data.get('FLOW_DURATION_MILLISECONDS', 0)
     
     # DNS Activity
-    if protocol == 'UDP' and (sport == 53 or dport == 53):
+    if l7_proto == 'DNS' or src_port == 53 or dst_port == 53:
         return 'DNS Query'
     
-    # Streaming Detection
-    if protocol == 'TCP' and size > 1000:
-        if payload and any(keyword in payload for keyword in ['video', 'stream', 'm3u8', 'ts']):
-            return 'Video Streaming'
-        if payload and any(keyword in payload for keyword in ['audio', 'mp3', 'wav', 'ogg']):
-            return 'Audio Streaming'
-    
-    # Gaming Detection
-    if protocol == 'UDP' and (sport in [27015, 27016, 27017, 27018, 27019, 27020] or 
-                             dport in [27015, 27016, 27017, 27018, 27019, 27020]):
-        return 'Gaming'
-    
     # Database Activity
-    if protocol == 'TCP' and (sport in [3306, 5432, 27017, 6379] or 
-                             dport in [3306, 5432, 27017, 6379]):
+    if src_port in [3306, 5432, 27017, 6379] or dst_port in [3306, 5432, 27017, 6379]:
         return 'Database Activity'
     
-    # Remote Access
-    if protocol == 'TCP' and (sport == 3389 or dport == 3389):
-        return 'Remote Desktop'
+    # VoIP Detection
+    if protocol == 'UDP':
+        if src_port in [5060, 5061, 16384, 16385, 16386, 16387] or \
+           dst_port in [5060, 5061, 16384, 16385, 16386, 16387]:
+            return 'VoIP Call'
     
-    return detect_application_protocol(packet, sport, dport)
-
-def detect_flow_activity(flow):
-    if not flow:
-        return 'UNKNOWN'
-    duration = (datetime.fromisoformat(flow['last_seen']) - 
-                datetime.fromisoformat(flow['start_time'])).total_seconds()
-    pkt_rate = flow['packet_count'] / max(duration, 1)
-    avg_size = flow['total_bytes'] / flow['packet_count']
-
-    # VoIP Call Pattern
-    if avg_size < 300 and pkt_rate > 5:
-        return 'VoIP Call'
-    
-    # File Transfer Pattern
-    if avg_size > 1000 and duration > 5:
+    # File Transfer Detection
+    total_bytes = in_bytes + out_bytes
+    if total_bytes > 100000:  # More than 100KB
         return 'File Transfer'
     
-    # Streaming Pattern
-    if avg_size > 500 and pkt_rate > 2 and duration > 10:
-        return 'Streaming'
-    
-    # Gaming Pattern
-    if avg_size < 200 and pkt_rate > 10:
-        return 'Gaming'
-    
-    # Database Pattern
-    if avg_size > 500 and pkt_rate < 2:
-        return 'Database Activity'
+    # Streaming Detection
+    if duration > 1000 and (in_bytes/duration > 1000 or out_bytes/duration > 1000):
+        return 'Video Streaming'
     
     return 'Messaging'
 
-class PacketSniffer:
+class SuricataHandler:
     def __init__(self):
-        self.packet_count = 0
         self.packet_queue = Queue()
         self.packet_buffer = []
-        self.flows = {}  # Key: (src_ip, dst_ip, src_port, dst_port, proto)
-        self.continue_capture = True
+        self.continue_processing = True
         self.processor_thread = threading.Thread(target=self.process_queue)
         self.processor_thread.daemon = True
         self.processor_thread.start()
 
-    def update_flow(self, packet_data):
-        flow_key = (
-            packet_data['sourceIP'], packet_data['destinationIP'],
-            packet_data['sourcePort'], packet_data['destinationPort'],
-            packet_data['protocol']
-        )
-        if flow_key not in self.flows:
-            self.flows[flow_key] = {
-                'start_time': packet_data['timestamp'],
-                'packet_count': 0,
-                'total_bytes': 0,
-                'last_seen': packet_data['timestamp']
+    def process_suricata_data(self, suricata_data):
+        try:
+            packet_data = {
+                'id': str(uuid.uuid4()),
+                'timestamp': datetime.now().isoformat(),
+                'sourcePort': suricata_data.get('L4_SRC_PORT'),
+                'destinationPort': suricata_data.get('L4_DST_PORT'),
+                'sourceIP': suricata_data.get('IPV4_SRC_ADDR'),
+                'destinationIP': suricata_data.get('IPV4_DST_ADDR'),
+                'protocol': suricata_data.get('PROTOCOL', 'UNKNOWN'),
+                'size': suricata_data.get('IN_BYTES', 0) + suricata_data.get('OUT_BYTES', 0),
+                'isSuspicious': False,
+                'activity': 'UNKNOWN',
+                'application_protocol': suricata_data.get('L7_PROTO', 'UNKNOWN').upper(),
+                'risk_level': 'LOW',
+                'features': {
+                    'duration': float(suricata_data.get('FLOW_DURATION_MILLISECONDS', 0)),
+                    'packet_rate': 0,
+                    'avg_size': 0,
+                    'is_encrypted': suricata_data.get('L7_PROTO', '').lower() in ['https', 'ssh', 'ssl'],
+                    'is_compressed': False
+                }
             }
-        flow = self.flows[flow_key]
-        flow['packet_count'] += 1
-        flow['total_bytes'] += packet_data['size']
-        flow['last_seen'] = packet_data['timestamp']
 
-    def process_packet(self, packet):
-        if self.packet_count % 5 != 0:  # Sample every 5th packet
-            self.packet_count += 1
-            return
-        self.packet_count += 1
-        
-        packet_data = {
-            'id': str(uuid.uuid4()),
-            'timestamp': datetime.fromtimestamp(packet.time).isoformat(),
-            'sourcePort': None,
-            'destinationPort': None,
-            'sourceIP': None,
-            'destinationIP': None,
-            'protocol': None,
-            'size': len(packet),
-            'isSuspicious': False,
-            'payload': None,
-            'activity': 'UNKNOWN',
-            'flow_stats': None,
-            'application_protocol': None,
-            'packet_type': None,
-            'risk_level': 'LOW',
-            'features': {
-                'duration': 0,
-                'packet_rate': 0,
-                'avg_size': 0,
-                'is_encrypted': False,
-                'is_compressed': False
-            }
-        }
+            # Calculate packet rate and average size
+            total_packets = (suricata_data.get('IN_PKTS', 0) + suricata_data.get('OUT_PKTS', 0))
+            if total_packets > 0 and packet_data['features']['duration'] > 0:
+                packet_data['features']['packet_rate'] = total_packets / (packet_data['features']['duration'] / 1000)
+                packet_data['features']['avg_size'] = packet_data['size'] / total_packets
 
-        if IP in packet:
-            packet_data['sourceIP'] = packet[IP].src
-            packet_data['destinationIP'] = packet[IP].dst
+            # Determine activity type based on protocol and features
+            if packet_data['application_protocol'] == 'DNS':
+                packet_data['activity'] = 'DNS Query'
+            elif packet_data['protocol'] == 'UDP' and packet_data['features']['packet_rate'] > 50:
+                packet_data['activity'] = 'VoIP Call'
+            elif packet_data['size'] > 100000:
+                packet_data['activity'] = 'File Transfer'
+            elif packet_data['features']['packet_rate'] > 100:
+                packet_data['activity'] = 'Video Streaming'
+            else:
+                packet_data['activity'] = 'Messaging'
 
-        if TCP in packet:
-            packet_data['sourcePort'] = packet[TCP].sport
-            packet_data['destinationPort'] = packet[TCP].dport
-            packet_data['protocol'] = 'TCP'
-            packet_data['features']['is_encrypted'] = packet_data['sourcePort'] == 443 or packet_data['destinationPort'] == 443
-        elif UDP in packet:
-            packet_data['sourcePort'] = packet[UDP].sport
-            packet_data['destinationPort'] = packet[UDP].dport
-            packet_data['protocol'] = 'UDP'
-        elif ICMP in packet:
-            packet_data['protocol'] = 'ICMP'
-
-        if Raw in packet:
-            packet_data['payload'] = str(packet[Raw].load)[:100]
-            # Check for compression
-            if any(compression in packet_data['payload'].lower() for compression in ['gzip', 'deflate', 'compress']):
-                packet_data['features']['is_compressed'] = True
-
-        # Detect application protocol and activity
-        packet_data['application_protocol'] = detect_application_protocol(packet, packet_data['sourcePort'], packet_data['destinationPort'])
-        packet_data['activity'] = detect_packet_activity(packet, packet_data)
-        
-        # Update flow statistics
-        self.update_flow(packet_data)
-        flow = self.flows.get((
-            packet_data['sourceIP'], packet_data['destinationIP'],
-            packet_data['sourcePort'], packet_data['destinationPort'],
-            packet_data['protocol']
-        ))
-        
-        if flow:
-            packet_data['flow_stats'] = flow
-            packet_data['activity'] = detect_flow_activity(flow)
-            # Update features
-            duration = (datetime.fromisoformat(flow['last_seen']) - 
-                       datetime.fromisoformat(flow['start_time'])).total_seconds()
-            packet_data['features']['duration'] = duration
-            packet_data['features']['packet_rate'] = flow['packet_count'] / max(duration, 1)
-            packet_data['features']['avg_size'] = flow['total_bytes'] / flow['packet_count']
-            
-            # Determine risk level based on activity and features
-            if packet_data['activity'] in ['Remote Desktop', 'Database Activity']:
+            # Set risk level
+            if packet_data['activity'] in ['Database Activity', 'Remote Desktop']:
                 packet_data['risk_level'] = 'HIGH'
             elif packet_data['activity'] in ['File Transfer', 'VoIP Call']:
                 packet_data['risk_level'] = 'MEDIUM'
-            else:
-                packet_data['risk_level'] = 'LOW'
 
-        if packet_data['sourcePort'] and packet_data['destinationPort']:
-            if check_port_suspicious(packet_data['sourcePort'], packet_data['destinationPort']):
-                packet_data['isSuspicious'] = True
-                packet_data['risk_level'] = 'HIGH'
+            if packet_data['sourcePort'] and packet_data['destinationPort']:
+                if check_port_suspicious(packet_data['sourcePort'], packet_data['destinationPort']):
+                    packet_data['isSuspicious'] = True
+                    packet_data['risk_level'] = 'HIGH'
 
-        self.packet_buffer.append(packet_data)
-        if len(self.packet_buffer) >= 10:  # Batch emit every 10 packets
-            socketio.emit('packet_batch', self.packet_buffer)
-            self.packet_buffer = []
+            self.packet_buffer.append(packet_data)
+            if len(self.packet_buffer) >= 10:
+                socketio.emit('packet_batch', self.packet_buffer)
+                self.packet_buffer = []
 
-    def capture_packets(self):
-        logging.info("Starting packet capture...")
-        sniff(filter="tcp or udp", prn=lambda pkt: self.packet_queue.put(pkt), store=0)
+        except Exception as e:
+            logging.error(f"Error processing Suricata data: {e}")
+
+    def add_suricata_data(self, data):
+        self.packet_queue.put(data)
 
     def process_queue(self):
-        while True:
-            packet = self.packet_queue.get()
-            self.process_packet(packet)
-            self.packet_queue.task_done()
+        while self.continue_processing:
+            try:
+                data = self.packet_queue.get(timeout=1)
+                self.process_suricata_data(data)
+                self.packet_queue.task_done()
+            except Empty:
+                continue
+            except Exception as e:
+                logging.error(f"Error in process_queue: {e}")
+                continue
 
-    def stop_capture(self):
-        self.continue_capture = False
-        logging.info("Packet capture stopped.")
+    def stop_processing(self):
+        self.continue_processing = False
 
 @app.route('/health')
 def health_check():
@@ -536,33 +381,28 @@ def handle_remove_blocked_port(data):
     ]
     socketio.emit('blockedPorts', blocked_ports)
 
-SERVER_PORT = 5000
-MAX_PORT_ATTEMPTS = 5
+@app.route('/packet', methods=['POST'])
+def receive_packet():
+    try:
+        data = request.json
+        if suricata_handler:
+            suricata_handler.add_suricata_data(data)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logging.error(f"Error processing packet data: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
-def find_available_port(start_port, max_attempts):
-    for port in range(start_port, start_port + max_attempts):
-        try:
-            test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            test_socket.bind(('0.0.0.0', port))
-            test_socket.close()
-            return port
-        except OSError:
-            continue
-    return None
+# Create a global instance of SuricataHandler
+suricata_handler = None
+
+def start_server(port=5000):
+    global suricata_handler
+    suricata_handler = SuricataHandler()
+    socketio.run(app, host='0.0.0.0', port=port, debug=True, allow_unsafe_werkzeug=True)
 
 if __name__ == "__main__":
-    sniffer = PacketSniffer()
-    capture_thread = threading.Thread(target=sniffer.capture_packets)
-    capture_thread.daemon = True
-    capture_thread.start()
-
-    port = find_available_port(SERVER_PORT, MAX_PORT_ATTEMPTS)
-    if port is None:
-        logging.error(f"Could not find an available port in range {SERVER_PORT}-{SERVER_PORT + MAX_PORT_ATTEMPTS - 1}")
-        sys.exit(1)
-    
     try:
-        socketio.run(app, host='0.0.0.0', port=port, debug=True, allow_unsafe_werkzeug=True)
+        start_server(5000)
     except Exception as e:
         logging.error(f"Failed to start server: {e}")
         sys.exit(1)
