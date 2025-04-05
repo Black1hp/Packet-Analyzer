@@ -50,11 +50,31 @@ npm install
 sudo apt-get update
 sudo apt-get install suricata
 ```
-- Update Suricata configuration:
+
+- Copy and customize the Suricata configuration:
+```bash
+# Backup existing configuration
+sudo cp /etc/suricata/suricata.yaml /etc/suricata/suricata.yaml.bak
+
+# Copy our template
+sudo cp backend/suricata-config.yaml /etc/suricata/suricata.yaml
+```
+
+- Edit the configuration file:
 ```bash
 sudo nano /etc/suricata/suricata.yaml
 ```
-- Enable EVE logging and set the output path to `/var/log/suricata/eve.json`
+
+Important configurations to check/modify:
+- Replace `eth0` with your network interface name
+- Adjust memory settings based on your system
+- Verify the log paths:
+  - EVE log: `/var/log/suricata/eve.json`
+  - Main log: `/var/log/suricata/suricata.log`
+- Configure the protocols you want to monitor
+- Adjust threading based on your CPU
+
+You can find a detailed configuration template in `backend/suricata-config.yaml` with comments explaining each section.
 
 5. Set up environment variables:
 ```bash
@@ -75,6 +95,10 @@ ALERT_COOLDOWN_MINUTES=5
 
 1. Start Suricata:
 ```bash
+# Test the configuration
+sudo suricata -T -c /etc/suricata/suricata.yaml
+
+# Start Suricata
 sudo suricata -c /etc/suricata/suricata.yaml -i <your-network-interface>
 ```
 
@@ -131,19 +155,23 @@ Open your browser and navigate to `http://localhost:3000`
 ## ❗ Troubleshooting
 
 1. If Suricata fails to start:
-   - 🔍 Check if the network interface is correct
-   - 📝 Verify Suricata configuration file
-   - 🔑 Check system permissions
+   - 🔍 Check if the network interface is correct in suricata.yaml
+   - 📝 Run `sudo suricata -T -c /etc/suricata/suricata.yaml` to test configuration
+   - 🔑 Check system permissions for log directories
+   - 💾 Verify memory settings match your system capabilities
+   - 🌐 Ensure the network interface supports monitoring mode
 
 2. If the backend server fails:
    - ✅ Verify Python virtual environment is activated
    - 📦 Check all dependencies are installed
    - 🔌 Verify port 5000 is available
+   - 📁 Check if Suricata logs exist and are readable
 
 3. If the frontend fails to connect:
    - 🔄 Check if backend server is running
    - 🌐 Verify WebSocket connection
    - 🔍 Check browser console for errors
+   - 📊 Verify data is being written to eve.json
 
 ## 👥 Team Members
 1. Mohamed Saied
