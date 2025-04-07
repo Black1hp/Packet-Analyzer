@@ -19,22 +19,22 @@ A real-time network traffic analysis system with Intrusion Detection System (IDS
 - 🐍 Python 3.8 or higher
 - 📦 Node.js 14.x or higher
 - 🛡️ Suricata 6.0 or higher
-- 💻 Linux/Unix-based system (recommended)
+- 💻 Linux/Unix-based system
 - 🔄 Git
 
 ## 🚀 Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/network-traffic-analyzer.git
-cd network-traffic-analyzer
+git clone https://github.com/Black1hp/Packet-Analyzer.git
+cd Packet-Analyzer
 ```
 
 2. Set up the backend:
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: .\venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -45,14 +45,11 @@ npm install
 ```
 
 4. Configure Suricata:
-- Install Suricata if not already installed:
 ```bash
+# Install Suricata
 sudo apt-get update
 sudo apt-get install suricata
-```
 
-- Copy and customize the Suricata configuration:
-```bash
 # Backup existing configuration
 sudo cp /etc/suricata/suricata.yaml /etc/suricata/suricata.yaml.bak
 
@@ -60,21 +57,12 @@ sudo cp /etc/suricata/suricata.yaml /etc/suricata/suricata.yaml.bak
 sudo cp backend/suricata-config.yaml /etc/suricata/suricata.yaml
 ```
 
-- Edit the configuration file:
-```bash
-sudo nano /etc/suricata/suricata.yaml
-```
-
-Important configurations to check/modify:
+Important configurations to check/modify in suricata.yaml:
 - Replace `eth0` with your network interface name
 - Adjust memory settings based on your system
 - Verify the log paths:
   - EVE log: `/var/log/suricata/eve.json`
   - Main log: `/var/log/suricata/suricata.log`
-- Configure the protocols you want to monitor
-- Adjust threading based on your CPU
-
-You can find a detailed configuration template in `backend/suricata-config.yaml` with comments explaining each section.
 
 5. Set up environment variables:
 ```bash
@@ -105,7 +93,7 @@ sudo suricata -c /etc/suricata/suricata.yaml -i <your-network-interface>
 2. Start the backend server:
 ```bash
 cd backend
-source venv/bin/activate  # On Windows: .\venv\Scripts\activate
+source venv/bin/activate
 python server.py
 ```
 

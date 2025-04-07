@@ -47,7 +47,7 @@ class SuricataLogHandler(FileSystemEventHandler):
                     'IPV4_DST_ADDR': data.get('dest_ip'),
                     'L4_DST_PORT': int(data.get('dest_port', 0)),
                     'PROTOCOL': data.get('proto', '').upper(),
-                    'L7_PROTO': data.get('app_proto', '').upper(),
+                    'L7_PROTO': data.get('app_proto', 'UNKNOWN').upper(),
                     'IN_BYTES': int(data.get('flow', {}).get('bytes_toserver', 0)),
                     'IN_PKTS': int(data.get('flow', {}).get('pkts_toserver', 0)),
                     'OUT_BYTES': int(data.get('flow', {}).get('bytes_toclient', 0)),
@@ -57,7 +57,32 @@ class SuricataLogHandler(FileSystemEventHandler):
                     'DNS_QUERY_TYPE': data.get('dns', {}).get('type'),
                     'DNS_QUERY_ID': data.get('dns', {}).get('id'),
                     'DNS_TTL_ANSWER': data.get('dns', {}).get('ttl'),
+                    'IS_IPV6': ':' in str(data.get('src_ip', '')) or ':' in str(data.get('dest_ip', '')),
                 }
+
+                # Handle multicast and special addresses
+                src_ip = str(data.get('src_ip', ''))
+                dst_ip = str(data.get('dest_ip', ''))
+                is_multicast = (
+                    src_ip.startswith('ff02:') or 
+                    dst_ip.startswith('ff02:') or 
+                    dst_ip.startswith('224.') or 
+                    dst_ip.startswith('239.')
+                )
+                
+                # Improve protocol detection
+                if flow_data['L7_PROTO'] == 'UNKNOWN' or flow_data['L7_PROTO'] == 'FAILED':
+                    # Handle common multicast services
+                    if flow_data['L4_SRC_PORT'] == 5353 or flow_data['L4_DST_PORT'] == 5353:
+                        flow_data['L7_PROTO'] = 'MDNS'
+                    elif flow_data['L4_SRC_PORT'] == 138 or flow_data['L4_DST_PORT'] == 138:
+                        flow_data['L7_PROTO'] = 'NETBIOS'
+                    elif is_multicast:
+                        flow_data['L7_PROTO'] = 'MULTICAST'
+                    elif flow_data['IS_IPV6'] and flow_data['PROTOCOL'] == 'UDP':
+                        flow_data['L7_PROTO'] = 'IPV6-UDP'
+                    elif flow_data['IS_IPV6'] and flow_data['PROTOCOL'] == 'TCP':
+                        flow_data['L7_PROTO'] = 'IPV6-TCP'
 
                 # Calculate derived features
                 duration_seconds = flow_data['FLOW_DURATION_MILLISECONDS'] / 1000
