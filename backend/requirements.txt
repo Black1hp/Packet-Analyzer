@@ -1,5 +1,5 @@
 flask==3.0.2
 flask-socketio==5.3.6
-flask-cors==4.0.0
+flask-cors==4.0.2
 python-dotenv==1.0.1
 python-dateutil==2.8.2
