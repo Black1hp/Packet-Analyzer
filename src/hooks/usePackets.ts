@@ -22,13 +22,22 @@ export function usePackets() {
       console.log('Disconnected from packet stream');
     });
 
+    // Handle individual packets
+    socket.on('new_packet', (newPacket: Packet) => {
+      console.log('Received new packet:', newPacket);
+      setPackets(prev => [newPacket, ...prev].slice(0, 100));
+    });
+
+    // Also keep the batch handler for backward compatibility
     socket.on('packet_batch', (newPackets: Packet[]) => {
+      console.log('Received packet batch:', newPackets.length);
       setPackets(prev => [...newPackets, ...prev].slice(0, 100));
     });
 
     return () => {
       socket.off('connect');
       socket.off('disconnect');
+      socket.off('new_packet');
       socket.off('packet_batch');
     };
   }, []);

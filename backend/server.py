@@ -13,11 +13,13 @@ from email.mime.multipart import MIMEMultipart
 import socket
 import sys
 from queue import Queue, Empty
+import concurrent.futures
+import time
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -250,89 +252,232 @@ def detect_activity_type(suricata_data):
     return 'Messaging'
 
 class SuricataHandler:
-    def __init__(self):
+    def __init__(self, num_workers=4):
         self.packet_queue = Queue()
         self.packet_buffer = []
         self.continue_processing = True
-        self.processor_thread = threading.Thread(target=self.process_queue)
-        self.processor_thread.daemon = True
-        self.processor_thread.start()
+        self.workers = []
+        self.processing_lock = threading.Lock()
+        
+        # Create worker pool
+        for _ in range(num_workers):
+            worker = threading.Thread(target=self.process_queue)
+            worker.daemon = True
+            worker.start()
+            self.workers.append(worker)
 
     def process_suricata_data(self, suricata_data):
+        """Process Suricata data with parallel processing."""
         try:
-            packet_data = {
+            # Basic validation
+            if not suricata_data:
+                logging.warning("Received empty suricata data")
+                return
+                
+            # Extract basic data
+            source_ip = suricata_data.get('source_ip', '0.0.0.0')
+            dest_ip = suricata_data.get('dest_ip', '0.0.0.0')
+            source_port = suricata_data.get('source_port', 0)
+            dest_port = suricata_data.get('dest_port', 0)
+            protocol = suricata_data.get('protocol', 'UNKNOWN')
+            
+            # Process tasks in parallel using thread pool
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                # Submit tasks
+                app_protocol_future = executor.submit(detect_application_protocol, suricata_data)
+                activity_future = executor.submit(detect_activity_type, suricata_data)
+                port_suspicious_future = executor.submit(check_port_suspicious, source_port, dest_port)
+                
+                # Get results
+                application_protocol = app_protocol_future.result()
+                activity_type = activity_future.result()
+                port_suspicious = port_suspicious_future.result()
+            
+            # Determine risk level
+            risk_level = 'HIGH' if activity_type in ['Intrusion Attempt', 'Malware Activity'] else \
+                        'MEDIUM' if activity_type in ['Data Exfiltration', 'Suspicious Connection'] else 'LOW'
+            
+            # Check if suspicious
+            is_suspicious = port_suspicious or activity_type in ['Intrusion Attempt', 'Malware Activity', 'Data Exfiltration']
+            
+            # Handle suspicious activity if detected (non-blocking)
+            if is_suspicious:
+                threading.Thread(
+                    target=handle_suspicious_activity,
+                    args=(
+                        activity_type,
+                        f"Suspicious traffic detected from {source_ip}:{source_port} to {dest_ip}:{dest_port}",
+                        source_ip,
+                        dest_ip,
+                        protocol,
+                        dest_port
+                    )
+                ).start()
+            
+            # Create packet data
+            packet = {
                 'id': str(uuid.uuid4()),
                 'timestamp': datetime.now().isoformat(),
-                'sourcePort': suricata_data.get('L4_SRC_PORT'),
-                'destinationPort': suricata_data.get('L4_DST_PORT'),
-                'sourceIP': suricata_data.get('IPV4_SRC_ADDR'),
-                'destinationIP': suricata_data.get('IPV4_DST_ADDR'),
-                'protocol': suricata_data.get('PROTOCOL', 'UNKNOWN'),
-                'size': suricata_data.get('IN_BYTES', 0) + suricata_data.get('OUT_BYTES', 0),
-                'isSuspicious': False,
-                'activity': 'UNKNOWN',
-                'application_protocol': suricata_data.get('L7_PROTO', 'UNKNOWN').upper(),
-                'risk_level': 'LOW',
+                'sourceIP': source_ip,
+                'destinationIP': dest_ip,
+                'sourcePort': source_port,
+                'destinationPort': dest_port,
+                'protocol': protocol,
+                'application_protocol': application_protocol,
+                'activity': activity_type,
+                'isSuspicious': is_suspicious,
+                'size': suricata_data.get('size', 0),
                 'features': {
-                    'duration': float(suricata_data.get('FLOW_DURATION_MILLISECONDS', 0)),
-                    'packet_rate': 0,
-                    'avg_size': 0,
-                    'is_encrypted': suricata_data.get('L7_PROTO', '').lower() in ['https', 'ssh', 'ssl'],
-                    'is_compressed': False
-                }
+                    'packet_rate': suricata_data.get('packet_rate', 0),
+                    'byte_rate': suricata_data.get('byte_rate', 0)
+                },
+                'risk_level': risk_level
             }
+            
+            # Emit to clients directly without going through the queue again
+            socketio.emit('new_packet', packet)
+            
+            # Add to buffer with thread safety
+            with self.processing_lock:
+                self.packet_buffer.append(packet)
+                if len(self.packet_buffer) > 1000:
+                    self.packet_buffer.pop(0)
 
-            # Calculate packet rate and average size
-            total_packets = (suricata_data.get('IN_PKTS', 0) + suricata_data.get('OUT_PKTS', 0))
-            if total_packets > 0 and packet_data['features']['duration'] > 0:
-                packet_data['features']['packet_rate'] = total_packets / (packet_data['features']['duration'] / 1000)
-                packet_data['features']['avg_size'] = packet_data['size'] / total_packets
-
-            # Determine activity type based on protocol and features
-            if packet_data['application_protocol'] == 'DNS':
-                packet_data['activity'] = 'DNS Query'
-            elif packet_data['protocol'] == 'UDP' and packet_data['features']['packet_rate'] > 50:
-                packet_data['activity'] = 'VoIP Call'
-            elif packet_data['size'] > 100000:
-                packet_data['activity'] = 'File Transfer'
-            elif packet_data['features']['packet_rate'] > 100:
-                packet_data['activity'] = 'Video Streaming'
-            else:
-                packet_data['activity'] = 'Messaging'
-
-            # Set risk level
-            if packet_data['activity'] in ['Database Activity', 'Remote Desktop']:
-                packet_data['risk_level'] = 'HIGH'
-            elif packet_data['activity'] in ['File Transfer', 'VoIP Call']:
-                packet_data['risk_level'] = 'MEDIUM'
-
-            if packet_data['sourcePort'] and packet_data['destinationPort']:
-                if check_port_suspicious(packet_data['sourcePort'], packet_data['destinationPort']):
-                    packet_data['isSuspicious'] = True
-                    packet_data['risk_level'] = 'HIGH'
-
-            self.packet_buffer.append(packet_data)
-            if len(self.packet_buffer) >= 10:
-                socketio.emit('packet_batch', self.packet_buffer)
-                self.packet_buffer = []
 
         except Exception as e:
-            logging.error(f"Error processing Suricata data: {e}")
-
+            logging.error(f"Error processing Suricata data: {str(e)}")
     def add_suricata_data(self, data):
-        self.packet_queue.put(data)
+        # Add data directly to the queue for processing
+        if data:
+            self.packet_queue.put(data)
 
     def process_queue(self):
+        """Process packets from the queue with optimized handling."""
         while self.continue_processing:
             try:
-                data = self.packet_queue.get(timeout=1)
-                self.process_suricata_data(data)
-                self.packet_queue.task_done()
-            except Empty:
-                continue
+                # Get multiple items at once if available
+                items = []
+                while True:
+                    try:
+                        item = self.packet_queue.get_nowait()
+                        items.append(item)
+                    except Empty:
+                        break
+
+                if items:
+                    # Process items in parallel
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        executor.map(self.finalize_packet_processing, items)
+
+                # Small sleep to prevent CPU thrashing
+                time.sleep(0.01)
+
             except Exception as e:
-                logging.error(f"Error in process_queue: {e}")
-                continue
+                logging.error(f"Error in queue processing: {str(e)}")
+
+    def finalize_packet_processing(self, packet_data):
+        """Finalize packet processing with optimized operations."""
+        try:
+            with self.processing_lock:
+                # Check if this is raw data or processed data
+                if isinstance(packet_data, dict) and 'data' in packet_data:
+                    # This is processed data from our parallel processing
+                    packet = {
+                        'id': str(uuid.uuid4()),
+                        'timestamp': datetime.now().isoformat(),
+                        'sourceIP': packet_data['data'].get('source_ip'),
+                        'destinationIP': packet_data['data'].get('dest_ip'),
+                        'sourcePort': packet_data['data'].get('source_port'),
+                        'destinationPort': packet_data['data'].get('dest_port'),
+                        'protocol': packet_data.get('protocol', 'Unknown'),
+                        'activity': packet_data.get('activity', 'General Traffic'),
+                        'isSuspicious': packet_data.get('port_suspicious', False),
+                        'size': packet_data['data'].get('size', 0)
+                    }
+                else:
+                    # This is raw data directly from add_suricata_data
+                    # Process it directly
+                    # Map Suricata field names to our expected field names
+                    source_ip = packet_data.get('IPV4_SRC_ADDR', packet_data.get('source_ip', '0.0.0.0'))
+                    dest_ip = packet_data.get('IPV4_DST_ADDR', packet_data.get('dest_ip', '0.0.0.0'))
+                    source_port = packet_data.get('L4_SRC_PORT', packet_data.get('source_port', 0))
+                    dest_port = packet_data.get('L4_DST_PORT', packet_data.get('dest_port', 0))
+                    protocol_raw = packet_data.get('PROTOCOL', packet_data.get('protocol', 'TCP'))
+                    app_protocol = packet_data.get('L7_PROTO', 'UNKNOWN')
+                    
+                    # Calculate size
+                    in_bytes = int(packet_data.get('IN_BYTES', 0))
+                    out_bytes = int(packet_data.get('OUT_BYTES', 0))
+                    total_size = in_bytes + out_bytes
+                    
+                    # Calculate packet rate
+                    in_pkts = int(packet_data.get('IN_PKTS', 0))
+                    out_pkts = int(packet_data.get('OUT_PKTS', 0))
+                    total_pkts = in_pkts + out_pkts
+                    duration_ms = float(packet_data.get('FLOW_DURATION_MILLISECONDS', 0))
+                    packet_rate = 0
+                    if duration_ms > 0:
+                        packet_rate = (total_pkts / (duration_ms / 1000))
+                    
+                    # Determine activity type based on protocol and ports
+                    activity = 'General Traffic'
+                    if app_protocol == 'DNS' or source_port == 53 or dest_port == 53:
+                        activity = 'DNS Query'
+                    elif app_protocol == 'HTTP' or dest_port == 80:
+                        activity = 'Web Browsing'
+                    elif app_protocol == 'HTTPS' or dest_port == 443:
+                        activity = 'Secure Web'
+                    elif app_protocol == 'SSH' or dest_port == 22:
+                        activity = 'Remote Access'
+                    elif app_protocol == 'SMTP' or dest_port == 25:
+                        activity = 'Email'
+                    elif app_protocol == 'FTP' or dest_port == 21:
+                        activity = 'File Transfer'
+                    elif total_size > 100000:
+                        activity = 'File Transfer'
+                    elif packet_rate > 50:
+                        activity = 'Streaming'
+                    
+                    # Determine risk level
+                    risk_level = 'LOW'
+                    is_suspicious = False
+                    if dest_port in [22, 23, 3389] or source_port in [22, 23, 3389]:
+                        risk_level = 'MEDIUM'
+                        is_suspicious = True
+                    
+                    # Basic protocol detection
+                    protocol = protocol_raw
+                    if app_protocol != 'UNKNOWN':
+                        protocol = app_protocol
+                    
+                    packet = {
+                        'id': str(uuid.uuid4()),
+                        'timestamp': datetime.now().isoformat(),
+                        'sourceIP': source_ip,
+                        'destinationIP': dest_ip,
+                        'sourcePort': source_port,
+                        'destinationPort': dest_port,
+                        'protocol': protocol,
+                        'activity': activity,
+                        'isSuspicious': is_suspicious,
+                        'risk_level': risk_level,
+                        'size': total_size,
+                        'features': {
+                            'packet_rate': packet_rate,
+                            'byte_rate': total_size / (duration_ms / 1000) if duration_ms > 0 else 0
+                        }
+                    }
+
+                # Emit to clients
+                socketio.emit('new_packet', packet)
+                
+                # Add to buffer with size limit
+                self.packet_buffer.append(packet)
+                if len(self.packet_buffer) > 1000:
+                    self.packet_buffer.pop(0)
+
+        except Exception as e:
+            logging.error(f"Error in final packet processing: {str(e)}")
 
     def stop_processing(self):
         self.continue_processing = False
@@ -392,13 +537,32 @@ def receive_packet():
         logging.error(f"Error processing packet data: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# Create a global instance of SuricataHandler
-suricata_handler = None
-
 def start_server(port=5000):
-    global suricata_handler
-    suricata_handler = SuricataHandler()
-    socketio.run(app, host='0.0.0.0', port=port, debug=True, allow_unsafe_werkzeug=True)
+    try:
+        # Create a global instance of SuricataHandler with optimized settings
+        global suricata_handler
+        suricata_handler = SuricataHandler(num_workers=4)  # Use 4 worker threads
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(),
+                logging.FileHandler('packet_analyzer.log')
+            ]
+        )
+        
+        # Start the Flask server with CORS properly configured
+        socketio.run(
+            app, 
+            host='0.0.0.0', 
+            port=port, 
+            debug=True,
+            allow_unsafe_werkzeug=True
+        )
+    except Exception as e:
+        logging.error(f"Error starting server: {str(e)}")
 
 if __name__ == "__main__":
     try:

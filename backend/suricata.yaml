@@ -46,11 +46,9 @@ outputs:
         enabled: no
       types:
         - flow
-        - tcp
         - dns:
             query: yes
             answer: yes
-        - icmp
         - alert:
             tagged-packets: yes
   - fast:
