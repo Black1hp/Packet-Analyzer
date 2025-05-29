@@ -109,7 +109,7 @@ class SuricataLogHandler(FileSystemEventHandler):
 
                 # Send data to our server
                 try:
-                    response = requests.post(f"{self.server_url}/packet", json=flow_data)
+                    response = requests.post(f"{self.server_url}/log", json=flow_data)
                     if response.status_code != 200:
                         logging.error(f"Failed to send data to server: {response.status_code}")
                 except Exception as e:
