@@ -250,6 +250,46 @@ Network-Forensics/
 
 Contributions are welcome! Please feel free to submit a Pull Request or open an Issue for any bugs or feature requests.
 
+## 👥 Team Members
+
+This project was developed by the following team members:
+
+- **Mohamed Saied**
+- **Ahmed Eldesouki**
+- **Mohamed Wael**
+- **Essameldin Amr**
+- **Ahmed Abdelmoniem**
+- **Marwan HossamEldin**
+- **Randa Emam**
+- **Monira Mahmoud**
+- **Ahmed Tarek**
+
+## 🤝 Contributing
+
+We welcome contributions from the community! If you'd like to contribute to this project, please follow these steps:
+
+1. **Fork the repository**
+2. **Create your feature branch**
+   ```bash
+   git checkout -b feature/AmazingFeature
+   ```
+3. **Commit your changes**
+   ```bash
+   git commit -m 'Add some AmazingFeature'
+   ```
+4. **Push to the branch**
+   ```bash
+   git push origin feature/AmazingFeature
+   ```
+5. **Open a Pull Request**
+
+## 📝 Usage Note
+
+This project is open source and available for anyone to use. If you find this project useful, we kindly ask that you:
+- Give credit by mentioning the original authors
+- Link back to this repository
+- Share any improvements or modifications you make
+
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
